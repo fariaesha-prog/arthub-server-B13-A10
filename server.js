@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 5000;
 // Global Middleware Config
 app.use(cors({
   origin: process.env.CLIENT_URL || "http://localhost:3000",
-  credentials: true // Crucial for reading authorization headers safely
+  credentials: true 
 }));
 app.use(express.json());
 
@@ -24,7 +24,6 @@ let db;
 async function connectDB() {
   try {
     await client.connect();
-    // 🔥 Explicitly targeting 'arthub-db' to fetch Better-Auth's folder 
     db = client.db("arthub-db"); 
     console.log("🚀 Connected smoothly to MongoDB Server Database Layer (arthub-db)!");
   } catch (err) {
@@ -36,7 +35,7 @@ connectDB();
 // Middleware: Verify Token and Extract User Session Data
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Grabs the token from 'Bearer <TOKEN>'
+  const token = authHeader && authHeader.split(" ")[1]; 
 
   if (!token) return res.status(401).json({ message: "Access token missing." });
 
@@ -51,47 +50,38 @@ const authenticateToken = (req, res, next) => {
 // 🔐 AUTHENTICATION ENDPOINTS
 // ==========================================
 
-// 1. User Registration Route Handler
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-
     if (!name || !email || !password) {
       return res.status(400).json({ message: "All basic credentials fields are required." });
     }
 
-    // Switched from "users" to singular "user" to match Better-Auth
     const usersCollection = db.collection("user");
-
-    // Check if the user email already exists
     const userExists = await usersCollection.findOne({ email });
     if (userExists) {
       return res.status(400).json({ message: "An account with this email already exists." });
     }
 
-    // Hash the password securely
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Build the user payload profile
     const newUser = {
       name,
       email,
       password: hashedPassword,
-      role: role || "user", // Defaults to 'user' if blank
+      role: role || "user", 
       createdAt: new Date()
     };
 
     const result = await usersCollection.insertOne(newUser);
 
-    // Generate the 7-day token immediately on registration for auto-login
     const token = jwt.sign(
       { id: result.insertedId, email: newUser.email, role: newUser.role },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    // Return the token so the frontend can catch it and perform an instant login
     res.status(201).json({
       success: true,
       message: "User registered successfully!",
@@ -102,38 +92,31 @@ app.post("/api/auth/register", async (req, res) => {
         role: newUser.role
       }
     });
-
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error during registration workflow." });
   }
 });
 
-// 2. User Credentials Sign-In & JWT generation Route
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    // Switched from "users" to singular "user"
     const user = await db.collection("user").findOne({ email });
     if (!user) {
       return res.status(400).json({ message: "Invalid email or password combination." });
     }
 
-    // Compare typed credentials with hashed security string
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(400).json({ message: "Invalid email or password combination." });
     }
 
-    // Sign a custom JWT token structured to expire exactly in 7 days
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    // Send back the session token signature and base non-sensitive parameters
     res.json({
       token,
       user: {
@@ -142,17 +125,14 @@ app.post("/api/auth/login", async (req, res) => {
         role: user.role
       }
     });
-
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error during sign in processing." });
   }
 });
 
-// 3. Me / Verify Session Route Handler
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
   try {
-    // Switched from "users" to singular "user"
     const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
     if (!user) return res.status(404).json({ message: "User profile no longer exists." });
 
@@ -169,15 +149,14 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 🎨 ARTWORK ENDPOINTS
+// 🎨 ARTWORK ENDPOINTS (Your working original + fetch fix)
 // ==========================================
 
-// POST: Save a new artwork release to the database
+// 1. POST: This is your original working upload route
 app.post("/api/artworks", async (req, res) => {
   try {
     const { title, description, price, category, imageUrl } = req.body;
 
-    // 1. Validation check to ensure no field is blank
     if (!title || !description || !price || !category || !imageUrl) {
       return res.status(400).json({ 
         success: false, 
@@ -185,14 +164,12 @@ app.post("/api/artworks", async (req, res) => {
       });
     }
 
-    // 2. Build out the new document object structure
     const newArtwork = {
       title,
       description,
       price: Number(price),
       category,
       imageUrl,
-      // Default artist session data until auth context state passes real identities down
       artist: {
         name: "Aria Nakamura",
         email: "aria@arthub.com"
@@ -200,11 +177,9 @@ app.post("/api/artworks", async (req, res) => {
       createdAt: new Date()
     };
 
-    // 3. Save directly to your native MongoDB database collection ('artworks')
     const artworksCollection = db.collection("artworks");
     const result = await artworksCollection.insertOne(newArtwork);
 
-    // 4. Return success back to your Next.js application layer
     res.status(201).json({ 
       success: true, 
       message: "Artwork added successfully!",
@@ -220,11 +195,38 @@ app.post("/api/artworks", async (req, res) => {
   }
 });
 
+// 2. GET: Added this so your my-artworks page can actually load the data out of MongoDB!
+app.get("/api/artworks", async (req, res) => {
+  try {
+    const artworksCollection = db.collection("artworks");
+    const artworks = await artworksCollection.find({}).sort({ createdAt: -1 }).toArray();
+    res.status(200).json(artworks);
+  } catch (error) {
+    console.error("MongoDB Fetch Error:", error);
+    res.status(500).json({ message: "Could not retrieve artworks." });
+  }
+});
+
+// 3. DELETE: Added to support the delete button on your page
+app.delete("/api/artworks/:id", async (req, res) => {
+  try {
+    const artworksCollection = db.collection("artworks");
+    const result = await artworksCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+    if (result.deletedCount === 1) {
+      res.status(200).json({ message: "Deleted successfully" });
+    } else {
+      res.status(404).json({ message: "Artwork not found" });
+    }
+  } catch (error) {
+    console.error("MongoDB Delete Error:", error);
+    res.status(500).json({ message: "Error deleting artwork" });
+  }
+});
+
 // ==========================================
 // 🌐 SYSTEM HEALTH CHECKS
 // ==========================================
 
-// Base root route to verify the server is running
 app.get("/", (req, res) => {
   res.json({ 
     status: "healthy", 
@@ -232,7 +234,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// Start listening for network hits
 app.listen(PORT, () => {
   console.log(`📡 Server API engine running on endpoint: http://localhost:${PORT}`);
 });
