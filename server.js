@@ -76,8 +76,9 @@ app.post("/api/auth/register", async (req, res) => {
 
     const result = await usersCollection.insertOne(newUser);
 
+    // Included 'name' inside the JWT signature payload
     const token = jwt.sign(
-      { id: result.insertedId, email: newUser.email, role: newUser.role },
+      { id: result.insertedId, email: newUser.email, role: newUser.role, name: newUser.name },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -111,8 +112,9 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ message: "Invalid email or password combination." });
     }
 
+    // Included 'name' inside the JWT signature payload
     const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
+      { id: user._id, email: user.email, role: user.role, name: user.name },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -149,11 +151,11 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 🎨 ARTWORK ENDPOINTS (Your working original + fetch fix)
+// 🎨 ARTWORK ENDPOINTS
 // ==========================================
 
-// 1. POST: This is your original working upload route
-app.post("/api/artworks", async (req, res) => {
+// 1. POST: Save a new artwork dynamic release tied to the active token owner
+app.post("/api/artworks", authenticateToken, async (req, res) => {
   try {
     const { title, description, price, category, imageUrl } = req.body;
 
@@ -171,8 +173,9 @@ app.post("/api/artworks", async (req, res) => {
       category,
       imageUrl,
       artist: {
-        name: "Aria Nakamura",
-        email: "aria@arthub.com"
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name || "Authenticated Artist"
       },
       createdAt: new Date()
     };
@@ -195,11 +198,14 @@ app.post("/api/artworks", async (req, res) => {
   }
 });
 
-// 2. GET: Added this so your my-artworks page can actually load the data out of MongoDB!
-app.get("/api/artworks", async (req, res) => {
+// 2. GET: Fetches artworks uploaded ONLY by the currently logged-in user session
+app.get("/api/artworks", authenticateToken, async (req, res) => {
   try {
     const artworksCollection = db.collection("artworks");
-    const artworks = await artworksCollection.find({}).sort({ createdAt: -1 }).toArray();
+    const artworks = await artworksCollection
+      .find({ "artist.email": req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
     res.status(200).json(artworks);
   } catch (error) {
     console.error("MongoDB Fetch Error:", error);
@@ -207,15 +213,28 @@ app.get("/api/artworks", async (req, res) => {
   }
 });
 
-// 3. DELETE: Added to support the delete button on your page
-app.delete("/api/artworks/:id", async (req, res) => {
+// 3. DELETE: Protects or removes selected portfolio collection nodes
+app.delete("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
     const artworksCollection = db.collection("artworks");
-    const result = await artworksCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    // Safety verification check: ensures the deleter actually owns the item
+    const artworkId = new ObjectId(req.params.id);
+    const artwork = await artworksCollection.findOne({ _id: artworkId });
+    
+    if (!artwork) {
+      return res.status(404).json({ message: "Artwork not found" });
+    }
+    
+    if (artwork.artist.email !== req.user.email) {
+      return res.status(403).json({ message: "Unauthorized deletion access target request rejected." });
+    }
+
+    const result = await artworksCollection.deleteOne({ _id: artworkId });
     if (result.deletedCount === 1) {
       res.status(200).json({ message: "Deleted successfully" });
     } else {
-      res.status(404).json({ message: "Artwork not found" });
+      res.status(500).json({ message: "Error deleting item data record." });
     }
   } catch (error) {
     console.error("MongoDB Delete Error:", error);
