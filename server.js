@@ -24,7 +24,7 @@ let db;
 async function connectDB() {
   try {
     await client.connect();
-    // 🔥 FIX 1: Explicitly targeting 'arthub-db' to fetch Better-Auth's folder 
+    // 🔥 Explicitly targeting 'arthub-db' to fetch Better-Auth's folder 
     db = client.db("arthub-db"); 
     console.log("🚀 Connected smoothly to MongoDB Server Database Layer (arthub-db)!");
   } catch (err) {
@@ -60,7 +60,7 @@ app.post("/api/auth/register", async (req, res) => {
       return res.status(400).json({ message: "All basic credentials fields are required." });
     }
 
-    // 🔥 FIX 2: Switched from "users" to singular "user" to match Better-Auth
+    // Switched from "users" to singular "user" to match Better-Auth
     const usersCollection = db.collection("user");
 
     // Check if the user email already exists
@@ -84,7 +84,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     const result = await usersCollection.insertOne(newUser);
 
-    // 🔥 FIX 3: Generate the 7-day token immediately on registration for auto-login
+    // Generate the 7-day token immediately on registration for auto-login
     const token = jwt.sign(
       { id: result.insertedId, email: newUser.email, role: newUser.role },
       process.env.JWT_SECRET,
@@ -114,7 +114,7 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // 🔥 FIX 4: Switched from "users" to singular "user"
+    // Switched from "users" to singular "user"
     const user = await db.collection("user").findOne({ email });
     if (!user) {
       return res.status(400).json({ message: "Invalid email or password combination." });
@@ -152,7 +152,7 @@ app.post("/api/auth/login", async (req, res) => {
 // 3. Me / Verify Session Route Handler
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
   try {
-    // 🔥 FIX 5: Switched from "users" to singular "user"
+    // Switched from "users" to singular "user"
     const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
     if (!user) return res.status(404).json({ message: "User profile no longer exists." });
 
@@ -167,6 +167,62 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Internal verification pipeline error." });
   }
 });
+
+// ==========================================
+// 🎨 ARTWORK ENDPOINTS
+// ==========================================
+
+// POST: Save a new artwork release to the database
+app.post("/api/artworks", async (req, res) => {
+  try {
+    const { title, description, price, category, imageUrl } = req.body;
+
+    // 1. Validation check to ensure no field is blank
+    if (!title || !description || !price || !category || !imageUrl) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Missing required fields. Please fill out the form entirely." 
+      });
+    }
+
+    // 2. Build out the new document object structure
+    const newArtwork = {
+      title,
+      description,
+      price: Number(price),
+      category,
+      imageUrl,
+      // Default artist session data until auth context state passes real identities down
+      artist: {
+        name: "Aria Nakamura",
+        email: "aria@arthub.com"
+      },
+      createdAt: new Date()
+    };
+
+    // 3. Save directly to your native MongoDB database collection ('artworks')
+    const artworksCollection = db.collection("artworks");
+    const result = await artworksCollection.insertOne(newArtwork);
+
+    // 4. Return success back to your Next.js application layer
+    res.status(201).json({ 
+      success: true, 
+      message: "Artwork added successfully!",
+      insertedId: result.insertedId
+    });
+
+  } catch (error) {
+    console.error("MongoDB Insert Error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Database insertion pipeline fault while saving metadata." 
+    });
+  }
+});
+
+// ==========================================
+// 🌐 SYSTEM HEALTH CHECKS
+// ==========================================
 
 // Base root route to verify the server is running
 app.get("/", (req, res) => {
