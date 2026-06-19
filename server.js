@@ -10,21 +10,19 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Global Middleware Config
 app.use(cors({
   origin: process.env.CLIENT_URL || "http://localhost:3000",
-  credentials: true 
+  credentials: true
 }));
 app.use(express.json());
 
-// Initialize MongoDB Connection
 const client = new MongoClient(process.env.MONGODB_URI);
 let db;
 
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db("arthub-db"); 
+    db = client.db("arthub-db");
     console.log("🚀 Connected smoothly to MongoDB Server Database Layer (arthub-db)!");
   } catch (err) {
     console.error("Database connection fault:", err);
@@ -32,13 +30,10 @@ async function connectDB() {
 }
 connectDB();
 
-// Middleware: Verify Token
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; 
-
+  const token = authHeader && authHeader.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Access token missing." });
-
   jwt.verify(token, process.env.JWT_SECRET, (err, decodedUser) => {
     if (err) return res.status(403).json({ message: "Invalid or expired token." });
     req.user = decodedUser;
@@ -55,11 +50,9 @@ app.post("/api/auth/register", async (req, res) => {
     const { name, email, password, role } = req.body;
     const usersCollection = db.collection("user");
     if (await usersCollection.findOne({ email })) return res.status(400).json({ message: "Email exists." });
-
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = { name, email, password: hashedPassword, role: role || "user", createdAt: new Date() };
     const result = await usersCollection.insertOne(newUser);
-
     const token = jwt.sign({ id: result.insertedId, email, role: newUser.role, name }, process.env.JWT_SECRET, { expiresIn: "7d" });
     res.status(201).json({ success: true, token, user: { name, email, role: newUser.role } });
   } catch (error) {
@@ -72,7 +65,6 @@ app.post("/api/auth/login", async (req, res) => {
     const { email, password } = req.body;
     const user = await db.collection("user").findOne({ email });
     if (!user || !(await bcrypt.compare(password, user.password))) return res.status(400).json({ message: "Invalid credentials." });
-
     const token = jwt.sign({ id: user._id, email: user.email, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
     res.json({ token, user: { name: user.name, email: user.email, role: user.role } });
   } catch (error) {
@@ -100,12 +92,22 @@ app.post("/api/artworks", authenticateToken, async (req, res) => {
   }
 });
 
+// Public - for browse page
+app.get("/api/artworks/public", async (req, res) => {
+  try {
+    const artworks = await db.collection("artworks").find().sort({ createdAt: -1 }).toArray();
+    res.json(artworks);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching artworks." });
+  }
+});
+
+// Artist's own artworks
 app.get("/api/artworks", authenticateToken, async (req, res) => {
   const artworks = await db.collection("artworks").find({ "artist.email": req.user.email }).sort({ createdAt: -1 }).toArray();
   res.json(artworks);
 });
 
-// Fetch one by ID (For Edit Page)
 app.get("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
     const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(req.params.id), "artist.email": req.user.email });
@@ -115,8 +117,6 @@ app.get("/api/artworks/:id", authenticateToken, async (req, res) => {
   }
 });
 
-// Update artwork
-// Update artwork
 app.put("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
     const result = await db.collection("artworks").findOneAndUpdate(
@@ -136,6 +136,82 @@ app.delete("/api/artworks/:id", authenticateToken, async (req, res) => {
     result.deletedCount === 1 ? res.json({ message: "Deleted successfully" }) : res.status(404).json({ message: "Not found." });
   } catch (error) {
     res.status(500).json({ message: "Delete failed." });
+  }
+});
+
+// ==========================================
+// 💰 SALES ENDPOINTS
+// ==========================================
+
+// User buys an artwork
+app.post("/api/sales", authenticateToken, async (req, res) => {
+  try {
+    const { artworkId } = req.body;
+
+    // Fetch the artwork (public, no artist check)
+    const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
+    if (!artwork) return res.status(404).json({ message: "Artwork not found." });
+
+    // Prevent artist from buying their own artwork
+    if (artwork.artist.email === req.user.email) {
+      return res.status(400).json({ message: "You cannot buy your own artwork." });
+    }
+
+    // Prevent duplicate purchase
+    const existing = await db.collection("sales").findOne({
+      artworkId: new ObjectId(artworkId),
+      "buyer.email": req.user.email
+    });
+    if (existing) return res.status(400).json({ message: "You already purchased this artwork." });
+
+    const sale = {
+      artworkId: new ObjectId(artworkId),
+      artworkTitle: artwork.title,
+      artworkImage: artwork.imageUrl,
+      price: artwork.price,
+      artist: {
+        id: artwork.artist.id,
+        name: artwork.artist.name,
+        email: artwork.artist.email
+      },
+      buyer: {
+        id: req.user.id,
+        name: req.user.name,
+        email: req.user.email
+      },
+      purchasedAt: new Date()
+    };
+
+    await db.collection("sales").insertOne(sale);
+    res.status(201).json({ success: true, message: "Artwork purchased successfully!" });
+  } catch (error) {
+    res.status(500).json({ message: "Purchase failed." });
+  }
+});
+
+// Artist sees their sales
+app.get("/api/sales/artist", authenticateToken, async (req, res) => {
+  try {
+    const sales = await db.collection("sales")
+      .find({ "artist.email": req.user.email })
+      .sort({ purchasedAt: -1 })
+      .toArray();
+    res.json(sales);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching sales." });
+  }
+});
+
+// User sees their purchases
+app.get("/api/sales/user", authenticateToken, async (req, res) => {
+  try {
+    const purchases = await db.collection("sales")
+      .find({ "buyer.email": req.user.email })
+      .sort({ purchasedAt: -1 })
+      .toArray();
+    res.json(purchases);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching purchases." });
   }
 });
 
