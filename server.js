@@ -78,6 +78,62 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
 });
 
 // ==========================================
+// 👤 PROFILE ENDPOINTS
+// ==========================================
+
+// Update name/email
+app.put("/api/auth/profile", authenticateToken, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    const usersCollection = db.collection("user");
+
+    // Check if new email is taken by someone else
+    if (email !== req.user.email) {
+      const existing = await usersCollection.findOne({ email });
+      if (existing) return res.status(400).json({ message: "Email already in use." });
+    }
+
+    await usersCollection.updateOne(
+      { _id: new ObjectId(req.user.id) },
+      { $set: { name, email, updatedAt: new Date() } }
+    );
+
+    // Issue a new token with updated name/email
+    const newToken = jwt.sign(
+      { id: req.user.id, email, role: req.user.role, name },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({ success: true, token: newToken, user: { name, email, role: req.user.role } });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update profile." });
+  }
+});
+
+// Change password
+app.put("/api/auth/change-password", authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Current password is incorrect." });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await db.collection("user").updateOne(
+      { _id: new ObjectId(req.user.id) },
+      { $set: { password: hashed, updatedAt: new Date() } }
+    );
+
+    res.json({ success: true, message: "Password updated successfully." });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to change password." });
+  }
+});
+
+// ==========================================
 // 🎨 ARTWORK ENDPOINTS
 // ==========================================
 
@@ -92,7 +148,6 @@ app.post("/api/artworks", authenticateToken, async (req, res) => {
   }
 });
 
-// Public - for browse page
 app.get("/api/artworks/public", async (req, res) => {
   try {
     const artworks = await db.collection("artworks").find().sort({ createdAt: -1 }).toArray();
@@ -102,7 +157,6 @@ app.get("/api/artworks/public", async (req, res) => {
   }
 });
 
-// Artist's own artworks
 app.get("/api/artworks", authenticateToken, async (req, res) => {
   const artworks = await db.collection("artworks").find({ "artist.email": req.user.email }).sort({ createdAt: -1 }).toArray();
   res.json(artworks);
@@ -143,21 +197,13 @@ app.delete("/api/artworks/:id", authenticateToken, async (req, res) => {
 // 💰 SALES ENDPOINTS
 // ==========================================
 
-// User buys an artwork
 app.post("/api/sales", authenticateToken, async (req, res) => {
   try {
     const { artworkId } = req.body;
-
-    // Fetch the artwork (public, no artist check)
     const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
     if (!artwork) return res.status(404).json({ message: "Artwork not found." });
+    if (artwork.artist.email === req.user.email) return res.status(400).json({ message: "You cannot buy your own artwork." });
 
-    // Prevent artist from buying their own artwork
-    if (artwork.artist.email === req.user.email) {
-      return res.status(400).json({ message: "You cannot buy your own artwork." });
-    }
-
-    // Prevent duplicate purchase
     const existing = await db.collection("sales").findOne({
       artworkId: new ObjectId(artworkId),
       "buyer.email": req.user.email
@@ -169,16 +215,8 @@ app.post("/api/sales", authenticateToken, async (req, res) => {
       artworkTitle: artwork.title,
       artworkImage: artwork.imageUrl,
       price: artwork.price,
-      artist: {
-        id: artwork.artist.id,
-        name: artwork.artist.name,
-        email: artwork.artist.email
-      },
-      buyer: {
-        id: req.user.id,
-        name: req.user.name,
-        email: req.user.email
-      },
+      artist: { id: artwork.artist.id, name: artwork.artist.name, email: artwork.artist.email },
+      buyer: { id: req.user.id, name: req.user.name, email: req.user.email },
       purchasedAt: new Date()
     };
 
@@ -189,7 +227,6 @@ app.post("/api/sales", authenticateToken, async (req, res) => {
   }
 });
 
-// Artist sees their sales
 app.get("/api/sales/artist", authenticateToken, async (req, res) => {
   try {
     const sales = await db.collection("sales")
@@ -202,7 +239,6 @@ app.get("/api/sales/artist", authenticateToken, async (req, res) => {
   }
 });
 
-// User sees their purchases
 app.get("/api/sales/user", authenticateToken, async (req, res) => {
   try {
     const purchases = await db.collection("sales")
