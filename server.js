@@ -17,7 +17,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Initialize MongoDB Connection Database Instance
+// Initialize MongoDB Connection
 const client = new MongoClient(process.env.MONGODB_URI);
 let db;
 
@@ -32,7 +32,7 @@ async function connectDB() {
 }
 connectDB();
 
-// Middleware: Verify Token and Extract User Session Data
+// Middleware: Verify Token
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1]; 
@@ -53,49 +53,17 @@ const authenticateToken = (req, res, next) => {
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All basic credentials fields are required." });
-    }
-
     const usersCollection = db.collection("user");
-    const userExists = await usersCollection.findOne({ email });
-    if (userExists) {
-      return res.status(400).json({ message: "An account with this email already exists." });
-    }
+    if (await usersCollection.findOne({ email })) return res.status(400).json({ message: "Email exists." });
 
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    const newUser = {
-      name,
-      email,
-      password: hashedPassword,
-      role: role || "user", 
-      createdAt: new Date()
-    };
-
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = { name, email, password: hashedPassword, role: role || "user", createdAt: new Date() };
     const result = await usersCollection.insertOne(newUser);
 
-    // Included 'name' inside the JWT signature payload
-    const token = jwt.sign(
-      { id: result.insertedId, email: newUser.email, role: newUser.role, name: newUser.name },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "User registered successfully!",
-      token,
-      user: {
-        name: newUser.name,
-        email: newUser.email,
-        role: newUser.role
-      }
-    });
+    const token = jwt.sign({ id: result.insertedId, email, role: newUser.role, name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    res.status(201).json({ success: true, token, user: { name, email, role: newUser.role } });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error during registration workflow." });
+    res.status(500).json({ message: "Server error." });
   }
 });
 
@@ -103,156 +71,72 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await db.collection("user").findOne({ email });
-    if (!user) {
-      return res.status(400).json({ message: "Invalid email or password combination." });
-    }
+    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(400).json({ message: "Invalid credentials." });
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(400).json({ message: "Invalid email or password combination." });
-    }
-
-    // Included 'name' inside the JWT signature payload
-    const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role, name: user.name },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.json({
-      token,
-      user: {
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: { name: user.name, email: user.email, role: user.role } });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error during sign in processing." });
+    res.status(500).json({ message: "Server error." });
   }
 });
 
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
-  try {
-    const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
-    if (!user) return res.status(404).json({ message: "User profile no longer exists." });
-
-    res.json({
-      user: {
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Internal verification pipeline error." });
-  }
+  const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
+  user ? res.json({ user: { name: user.name, email: user.email, role: user.role } }) : res.status(404).json({ message: "Not found." });
 });
 
 // ==========================================
 // 🎨 ARTWORK ENDPOINTS
 // ==========================================
 
-// 1. POST: Save a new artwork dynamic release tied to the active token owner
 app.post("/api/artworks", authenticateToken, async (req, res) => {
   try {
     const { title, description, price, category, imageUrl } = req.body;
-
-    if (!title || !description || !price || !category || !imageUrl) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Missing required fields. Please fill out the form entirely." 
-      });
-    }
-
-    const newArtwork = {
-      title,
-      description,
-      price: Number(price),
-      category,
-      imageUrl,
-      artist: {
-        id: req.user.id,
-        email: req.user.email,
-        name: req.user.name || "Authenticated Artist"
-      },
-      createdAt: new Date()
-    };
-
-    const artworksCollection = db.collection("artworks");
-    const result = await artworksCollection.insertOne(newArtwork);
-
-    res.status(201).json({ 
-      success: true, 
-      message: "Artwork added successfully!",
-      insertedId: result.insertedId
-    });
-
+    const newArtwork = { title, description, price: Number(price), category, imageUrl, artist: { id: req.user.id, email: req.user.email, name: req.user.name }, createdAt: new Date() };
+    const result = await db.collection("artworks").insertOne(newArtwork);
+    res.status(201).json({ success: true, insertedId: result.insertedId });
   } catch (error) {
-    console.error("MongoDB Insert Error:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "Database insertion pipeline fault while saving metadata." 
-    });
+    res.status(500).json({ message: "Database error." });
   }
 });
 
-// 2. GET: Fetches artworks uploaded ONLY by the currently logged-in user session
 app.get("/api/artworks", authenticateToken, async (req, res) => {
+  const artworks = await db.collection("artworks").find({ "artist.email": req.user.email }).sort({ createdAt: -1 }).toArray();
+  res.json(artworks);
+});
+
+// Fetch one by ID (For Edit Page)
+app.get("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
-    const artworksCollection = db.collection("artworks");
-    const artworks = await artworksCollection
-      .find({ "artist.email": req.user.email })
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.status(200).json(artworks);
+    const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(req.params.id), "artist.email": req.user.email });
+    artwork ? res.json(artwork) : res.status(404).json({ message: "Not found" });
   } catch (error) {
-    console.error("MongoDB Fetch Error:", error);
-    res.status(500).json({ message: "Could not retrieve artworks." });
+    res.status(500).json({ message: "Error fetching." });
   }
 });
 
-// 3. DELETE: Protects or removes selected portfolio collection nodes
+// Update artwork
+// Update artwork
+app.put("/api/artworks/:id", authenticateToken, async (req, res) => {
+  try {
+    const result = await db.collection("artworks").findOneAndUpdate(
+      { _id: new ObjectId(req.params.id), "artist.email": req.user.email },
+      { $set: { ...req.body, price: Number(req.body.price), updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+    result ? res.json(result) : res.status(404).json({ message: "Not found or unauthorized." });
+  } catch (error) {
+    res.status(500).json({ message: "Update failed." });
+  }
+});
+
 app.delete("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
-    const artworksCollection = db.collection("artworks");
-    
-    // Safety verification check: ensures the deleter actually owns the item
-    const artworkId = new ObjectId(req.params.id);
-    const artwork = await artworksCollection.findOne({ _id: artworkId });
-    
-    if (!artwork) {
-      return res.status(404).json({ message: "Artwork not found" });
-    }
-    
-    if (artwork.artist.email !== req.user.email) {
-      return res.status(403).json({ message: "Unauthorized deletion access target request rejected." });
-    }
-
-    const result = await artworksCollection.deleteOne({ _id: artworkId });
-    if (result.deletedCount === 1) {
-      res.status(200).json({ message: "Deleted successfully" });
-    } else {
-      res.status(500).json({ message: "Error deleting item data record." });
-    }
+    const result = await db.collection("artworks").deleteOne({ _id: new ObjectId(req.params.id), "artist.email": req.user.email });
+    result.deletedCount === 1 ? res.json({ message: "Deleted successfully" }) : res.status(404).json({ message: "Not found." });
   } catch (error) {
-    console.error("MongoDB Delete Error:", error);
-    res.status(500).json({ message: "Error deleting artwork" });
+    res.status(500).json({ message: "Delete failed." });
   }
 });
 
-// ==========================================
-// 🌐 SYSTEM HEALTH CHECKS
-// ==========================================
-
-app.get("/", (req, res) => {
-  res.json({ 
-    status: "healthy", 
-    message: "ArtHub Backend Server is running smoothly!" 
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`📡 Server API engine running on endpoint: http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`📡 Server running on http://localhost:${PORT}`));
