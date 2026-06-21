@@ -340,4 +340,35 @@ app.get("/api/admin/transactions", authenticateToken, requireAdmin, async (req, 
   }
 });
 
+// Top 3 artists by sales
+app.get("/api/artists/top", async (req, res) => {
+  try {
+    const sales = await db.collection("sales").find().toArray();
+
+    const artistMap = {};
+    sales.forEach(sale => {
+      const email = sale.artist?.email;
+      if (!email) return;
+      if (!artistMap[email]) {
+        artistMap[email] = {
+          name: sale.artist.name,
+          email: sale.artist.email,
+          totalSales: 0,
+          totalRevenue: 0
+        };
+      }
+      artistMap[email].totalSales += 1;
+      artistMap[email].totalRevenue += sale.price;
+    });
+
+    const top3 = Object.values(artistMap)
+      .sort((a, b) => b.totalSales - a.totalSales)
+      .slice(0, 3);
+
+    res.json(top3);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching top artists." });
+  }
+});
+
 app.listen(PORT, () => console.log(`📡 Server running on http://localhost:${PORT}`));
