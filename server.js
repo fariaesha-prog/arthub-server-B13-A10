@@ -399,4 +399,83 @@ app.get("/api/artists", async (req, res) => {
     res.status(500).json({ message: "Error fetching artists." });
   }
 });
+// ==========================================
+// 💬 COMMENT ENDPOINTS
+// ==========================================
+
+// Get comments for an artwork
+app.get("/api/artworks/:id/comments", async (req, res) => {
+  try {
+    const comments = await db.collection("comments")
+      .find({ artworkId: new ObjectId(req.params.id) })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json(comments);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching comments." });
+  }
+});
+
+// Post a comment (must have purchased the artwork)
+app.post("/api/artworks/:id/comments", authenticateToken, async (req, res) => {
+  try {
+    const { comment } = req.body;
+    if (!comment?.trim()) return res.status(400).json({ message: "Comment cannot be empty." });
+
+    const artworkId = new ObjectId(req.params.id);
+
+    // Check if user purchased this artwork
+    const purchase = await db.collection("sales").findOne({
+      artworkId,
+      "buyer.email": req.user.email
+    });
+    if (!purchase) return res.status(403).json({ message: "You must purchase this artwork to comment." });
+
+    const newComment = {
+      artworkId,
+      userId: new ObjectId(req.user.id),
+      userName: req.user.name,
+      userEmail: req.user.email,
+      comment: comment.trim(),
+      createdAt: new Date()
+    };
+
+    const result = await db.collection("comments").insertOne(newComment);
+    res.status(201).json({ ...newComment, _id: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to post comment." });
+  }
+});
+
+// Edit own comment
+app.put("/api/comments/:id", authenticateToken, async (req, res) => {
+  try {
+    const { comment } = req.body;
+    if (!comment?.trim()) return res.status(400).json({ message: "Comment cannot be empty." });
+
+    const result = await db.collection("comments").findOneAndUpdate(
+      { _id: new ObjectId(req.params.id), userEmail: req.user.email },
+      { $set: { comment: comment.trim(), updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+    result ? res.json(result) : res.status(404).json({ message: "Comment not found or unauthorized." });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update comment." });
+  }
+});
+
+// Delete own comment
+app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
+  try {
+    const result = await db.collection("comments").deleteOne({
+      _id: new ObjectId(req.params.id),
+      userEmail: req.user.email
+    });
+    result.deletedCount === 1
+      ? res.json({ message: "Comment deleted." })
+      : res.status(404).json({ message: "Comment not found or unauthorized." });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete comment." });
+  }
+});
 app.listen(PORT, () => console.log(`📡 Server running on http://localhost:${PORT}`));
