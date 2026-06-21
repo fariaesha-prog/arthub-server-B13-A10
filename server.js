@@ -370,5 +370,33 @@ app.get("/api/artists/top", async (req, res) => {
     res.status(500).json({ message: "Error fetching top artists." });
   }
 });
+// All artists with sales stats
+app.get("/api/artists", async (req, res) => {
+  try {
+    const [artists, sales] = await Promise.all([
+      db.collection("user").find({ role: "artist" }, { projection: { password: 0 } }).toArray(),
+      db.collection("sales").find().toArray()
+    ]);
 
+    const salesMap = {};
+    sales.forEach(sale => {
+      const email = sale.artist?.email;
+      if (!email) return;
+      if (!salesMap[email]) salesMap[email] = { totalSales: 0, totalRevenue: 0 };
+      salesMap[email].totalSales += 1;
+      salesMap[email].totalRevenue += sale.price;
+    });
+
+    const result = artists.map(a => ({
+      name: a.name,
+      email: a.email,
+      totalSales: salesMap[a.email]?.totalSales || 0,
+      totalRevenue: salesMap[a.email]?.totalRevenue || 0
+    })).sort((a, b) => b.totalSales - a.totalSales);
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching artists." });
+  }
+});
 app.listen(PORT, () => console.log(`📡 Server running on http://localhost:${PORT}`));
