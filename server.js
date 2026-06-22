@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 5000;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:3000",
+  origin: [process.env.CLIENT_URL || "http://localhost:3000", "https://arthub-client-b13-a10.vercel.app"],
   credentials: true
 }));
 app.use(express.json());
