@@ -4,11 +4,13 @@ import dotenv from "dotenv";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { MongoClient, ObjectId } from "mongodb";
+import Stripe from "stripe";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors({
   origin: process.env.CLIENT_URL || "http://localhost:3000",
@@ -180,7 +182,6 @@ app.put("/api/artworks/:id", authenticateToken, async (req, res) => {
 
 app.delete("/api/artworks/:id", authenticateToken, async (req, res) => {
   try {
-    // Allow admin to delete any artwork, artist can only delete their own
     const query = req.user.role === "admin"
       ? { _id: new ObjectId(req.params.id) }
       : { _id: new ObjectId(req.params.id), "artist.email": req.user.email };
@@ -250,7 +251,6 @@ app.get("/api/sales/user", authenticateToken, async (req, res) => {
 // 👑 ADMIN ENDPOINTS
 // ==========================================
 
-// Analytics overview
 app.get("/api/admin/analytics", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const [users, artworks, sales] = await Promise.all([
@@ -261,8 +261,6 @@ app.get("/api/admin/analytics", authenticateToken, requireAdmin, async (req, res
     const totalUsers = users.filter(u => u.role === "user").length;
     const totalArtists = users.filter(u => u.role === "artist").length;
     const totalRevenue = sales.reduce((sum, s) => sum + s.price, 0);
-
-    // Sales by month (last 6 months)
     const now = new Date();
     const months = Array.from({ length: 6 }, (_, i) => {
       const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
@@ -273,29 +271,17 @@ app.get("/api/admin/analytics", authenticateToken, requireAdmin, async (req, res
       const match = months.find(m => m.monthIndex === d.getMonth() && m.year === d.getFullYear());
       if (match) { match.amount += sale.price; match.count += 1; }
     });
-
-    // Artworks by category
     const categoryMap = {};
     artworks.forEach(a => {
       categoryMap[a.category] = (categoryMap[a.category] || 0) + 1;
     });
     const artworksByCategory = Object.entries(categoryMap).map(([name, count]) => ({ name, count }));
-
-    res.json({
-      totalUsers,
-      totalArtists,
-      totalArtworks: artworks.length,
-      totalSales: sales.length,
-      totalRevenue,
-      salesByMonth: months,
-      artworksByCategory
-    });
+    res.json({ totalUsers, totalArtists, totalArtworks: artworks.length, totalSales: sales.length, totalRevenue, salesByMonth: months, artworksByCategory });
   } catch (error) {
     res.status(500).json({ message: "Error fetching analytics." });
   }
 });
 
-// Get all users
 app.get("/api/admin/users", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const users = await db.collection("user").find({}, { projection: { password: 0 } }).sort({ createdAt: -1 }).toArray();
@@ -305,7 +291,6 @@ app.get("/api/admin/users", authenticateToken, requireAdmin, async (req, res) =>
   }
 });
 
-// Change user role
 app.put("/api/admin/users/:id/role", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { role } = req.body;
@@ -320,7 +305,6 @@ app.put("/api/admin/users/:id/role", authenticateToken, requireAdmin, async (req
   }
 });
 
-// Get all artworks (admin)
 app.get("/api/admin/artworks", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const artworks = await db.collection("artworks").find().sort({ createdAt: -1 }).toArray();
@@ -330,7 +314,6 @@ app.get("/api/admin/artworks", authenticateToken, requireAdmin, async (req, res)
   }
 });
 
-// Get all transactions (admin)
 app.get("/api/admin/transactions", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const sales = await db.collection("sales").find().sort({ purchasedAt: -1 }).toArray();
@@ -340,44 +323,36 @@ app.get("/api/admin/transactions", authenticateToken, requireAdmin, async (req, 
   }
 });
 
-// Top 3 artists by sales
+// ==========================================
+// 🎭 ARTISTS ENDPOINTS
+// ==========================================
+
 app.get("/api/artists/top", async (req, res) => {
   try {
     const sales = await db.collection("sales").find().toArray();
-
     const artistMap = {};
     sales.forEach(sale => {
       const email = sale.artist?.email;
       if (!email) return;
       if (!artistMap[email]) {
-        artistMap[email] = {
-          name: sale.artist.name,
-          email: sale.artist.email,
-          totalSales: 0,
-          totalRevenue: 0
-        };
+        artistMap[email] = { name: sale.artist.name, email: sale.artist.email, totalSales: 0, totalRevenue: 0 };
       }
       artistMap[email].totalSales += 1;
       artistMap[email].totalRevenue += sale.price;
     });
-
-    const top3 = Object.values(artistMap)
-      .sort((a, b) => b.totalSales - a.totalSales)
-      .slice(0, 3);
-
+    const top3 = Object.values(artistMap).sort((a, b) => b.totalSales - a.totalSales).slice(0, 3);
     res.json(top3);
   } catch (error) {
     res.status(500).json({ message: "Error fetching top artists." });
   }
 });
-// All artists with sales stats
+
 app.get("/api/artists", async (req, res) => {
   try {
     const [artists, sales] = await Promise.all([
       db.collection("user").find({ role: "artist" }, { projection: { password: 0 } }).toArray(),
       db.collection("sales").find().toArray()
     ]);
-
     const salesMap = {};
     sales.forEach(sale => {
       const email = sale.artist?.email;
@@ -386,24 +361,22 @@ app.get("/api/artists", async (req, res) => {
       salesMap[email].totalSales += 1;
       salesMap[email].totalRevenue += sale.price;
     });
-
     const result = artists.map(a => ({
       name: a.name,
       email: a.email,
       totalSales: salesMap[a.email]?.totalSales || 0,
       totalRevenue: salesMap[a.email]?.totalRevenue || 0
     })).sort((a, b) => b.totalSales - a.totalSales);
-
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Error fetching artists." });
   }
 });
+
 // ==========================================
 // 💬 COMMENT ENDPOINTS
 // ==========================================
 
-// Get comments for an artwork
 app.get("/api/artworks/:id/comments", async (req, res) => {
   try {
     const comments = await db.collection("comments")
@@ -416,21 +389,16 @@ app.get("/api/artworks/:id/comments", async (req, res) => {
   }
 });
 
-// Post a comment (must have purchased the artwork)
 app.post("/api/artworks/:id/comments", authenticateToken, async (req, res) => {
   try {
     const { comment } = req.body;
     if (!comment?.trim()) return res.status(400).json({ message: "Comment cannot be empty." });
-
     const artworkId = new ObjectId(req.params.id);
-
-    // Check if user purchased this artwork
     const purchase = await db.collection("sales").findOne({
       artworkId,
       "buyer.email": req.user.email
     });
     if (!purchase) return res.status(403).json({ message: "You must purchase this artwork to comment." });
-
     const newComment = {
       artworkId,
       userId: new ObjectId(req.user.id),
@@ -439,7 +407,6 @@ app.post("/api/artworks/:id/comments", authenticateToken, async (req, res) => {
       comment: comment.trim(),
       createdAt: new Date()
     };
-
     const result = await db.collection("comments").insertOne(newComment);
     res.status(201).json({ ...newComment, _id: result.insertedId });
   } catch (error) {
@@ -447,12 +414,10 @@ app.post("/api/artworks/:id/comments", authenticateToken, async (req, res) => {
   }
 });
 
-// Edit own comment
 app.put("/api/comments/:id", authenticateToken, async (req, res) => {
   try {
     const { comment } = req.body;
     if (!comment?.trim()) return res.status(400).json({ message: "Comment cannot be empty." });
-
     const result = await db.collection("comments").findOneAndUpdate(
       { _id: new ObjectId(req.params.id), userEmail: req.user.email },
       { $set: { comment: comment.trim(), updatedAt: new Date() } },
@@ -464,7 +429,6 @@ app.put("/api/comments/:id", authenticateToken, async (req, res) => {
   }
 });
 
-// Delete own comment
 app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
   try {
     const result = await db.collection("comments").deleteOne({
@@ -478,4 +442,131 @@ app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Failed to delete comment." });
   }
 });
+
+// ==========================================
+// 💳 STRIPE PAYMENT ENDPOINTS
+// ==========================================
+
+app.post("/api/payments/artwork", authenticateToken, async (req, res) => {
+  try {
+    const { artworkId } = req.body;
+    const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
+    if (!artwork) return res.status(404).json({ message: "Artwork not found." });
+    if (artwork.artist.email === req.user.email) return res.status(400).json({ message: "You cannot buy your own artwork." });
+    const existing = await db.collection("sales").findOne({
+      artworkId: new ObjectId(artworkId),
+      "buyer.email": req.user.email
+    });
+    if (existing) return res.status(400).json({ message: "You already purchased this artwork." });
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [{
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: artwork.title,
+            description: artwork.description || "Original artwork from ArtHub",
+            images: [artwork.imageUrl],
+          },
+          unit_amount: Math.round(artwork.price * 100),
+        },
+        quantity: 1,
+      }],
+      mode: "payment",
+      success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}&type=artwork&artworkId=${artworkId}`,
+      cancel_url: `${process.env.CLIENT_URL}/artworks/${artworkId}?cancelled=true`,
+      metadata: {
+        artworkId: artworkId.toString(),
+        buyerEmail: req.user.email,
+        buyerName: req.user.name,
+        buyerId: req.user.id.toString(),
+      }
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to create checkout session." });
+  }
+});
+
+app.post("/api/payments/subscription", authenticateToken, async (req, res) => {
+  try {
+    const { tier } = req.body;
+    const plans = {
+      pro: { name: "ArtHub Pro", price: 999, description: "Up to 9 artwork purchases per month" },
+      premium: { name: "ArtHub Premium", price: 1999, description: "Unlimited artwork purchases" }
+    };
+    const plan = plans[tier];
+    if (!plan) return res.status(400).json({ message: "Invalid plan." });
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [{
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: plan.name,
+            description: plan.description,
+          },
+          unit_amount: plan.price,
+        },
+        quantity: 1,
+      }],
+      mode: "payment",
+      success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}&type=subscription&tier=${tier}`,
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/user/subscription?cancelled=true`,
+      metadata: {
+        userId: req.user.id.toString(),
+        userEmail: req.user.email,
+        tier,
+      }
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to create subscription session." });
+  }
+});
+
+app.post("/api/payments/verify", authenticateToken, async (req, res) => {
+  try {
+    const { sessionId, type } = req.body;
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({ message: "Payment not completed." });
+    }
+    if (type === "artwork") {
+      const artworkId = session.metadata.artworkId;
+      const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
+      const existing = await db.collection("sales").findOne({
+        artworkId: new ObjectId(artworkId),
+        "buyer.email": session.metadata.buyerEmail
+      });
+      if (!existing && artwork) {
+        const sale = {
+          artworkId: new ObjectId(artworkId),
+          artworkTitle: artwork.title,
+          artworkImage: artwork.imageUrl,
+          price: artwork.price,
+          artist: { id: artwork.artist.id, name: artwork.artist.name, email: artwork.artist.email },
+          buyer: { id: session.metadata.buyerId, name: session.metadata.buyerName, email: session.metadata.buyerEmail },
+          stripeSessionId: sessionId,
+          purchasedAt: new Date()
+        };
+        await db.collection("sales").insertOne(sale);
+      }
+      res.json({ success: true, type: "artwork" });
+    } else if (type === "subscription") {
+      const { tier, userId } = session.metadata;
+      await db.collection("user").updateOne(
+        { _id: new ObjectId(userId) },
+        { $set: { subscriptionTier: tier, updatedAt: new Date() } }
+      );
+      res.json({ success: true, type: "subscription", tier });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to verify payment." });
+  }
+});
+
 app.listen(PORT, () => console.log(`📡 Server running on http://localhost:${PORT}`));
