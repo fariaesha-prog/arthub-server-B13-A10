@@ -58,10 +58,10 @@ app.post("/api/auth/register", async (req, res) => {
     const usersCollection = db.collection("user");
     if (await usersCollection.findOne({ email })) return res.status(400).json({ message: "Email exists." });
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = { name, email, password: hashedPassword, role: role || "user", createdAt: new Date() };
+    const newUser = { name, email, password: hashedPassword, role: role || "user", avatar: null, createdAt: new Date() };
     const result = await usersCollection.insertOne(newUser);
     const token = jwt.sign({ id: result.insertedId, email, role: newUser.role, name }, process.env.JWT_SECRET, { expiresIn: "7d" });
-    res.status(201).json({ success: true, token, user: { name, email, role: newUser.role } });
+    res.status(201).json({ success: true, token, user: { name, email, role: newUser.role, avatar: newUser.avatar } });
   } catch (error) {
     res.status(500).json({ message: "Server error." });
   }
@@ -73,7 +73,7 @@ app.post("/api/auth/login", async (req, res) => {
     const user = await db.collection("user").findOne({ email });
     if (!user || !(await bcrypt.compare(password, user.password))) return res.status(400).json({ message: "Invalid credentials." });
     const token = jwt.sign({ id: user._id, email: user.email, role: user.role, name: user.name }, process.env.JWT_SECRET, { expiresIn: "7d" });
-    res.json({ token, user: { name: user.name, email: user.email, role: user.role } });
+    res.json({ token, user: { name: user.name, email: user.email, role: user.role, avatar: user.avatar } });
   } catch (error) {
     res.status(500).json({ message: "Server error." });
   }
@@ -81,7 +81,7 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
   const user = await db.collection("user").findOne({ _id: new ObjectId(req.user.id) });
-  user ? res.json({ user: { name: user.name, email: user.email, role: user.role } }) : res.status(404).json({ message: "Not found." });
+  user ? res.json({ user: { name: user.name, email: user.email, role: user.role, avatar: user.avatar } }) : res.status(404).json({ message: "Not found." });
 });
 
 // ==========================================
@@ -90,7 +90,7 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
 
 app.put("/api/auth/profile", authenticateToken, async (req, res) => {
   try {
-    const { name, email } = req.body;
+    const { name, email, avatar } = req.body;
     const usersCollection = db.collection("user");
     if (email !== req.user.email) {
       const existing = await usersCollection.findOne({ email });
@@ -98,14 +98,14 @@ app.put("/api/auth/profile", authenticateToken, async (req, res) => {
     }
     await usersCollection.updateOne(
       { _id: new ObjectId(req.user.id) },
-      { $set: { name, email, updatedAt: new Date() } }
+      { $set: { name, email, avatar, updatedAt: new Date() } }
     );
     const newToken = jwt.sign(
       { id: req.user.id, email, role: req.user.role, name },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
-    res.json({ success: true, token: newToken, user: { name, email, role: req.user.role } });
+    res.json({ success: true, token: newToken, user: { name, email, role: req.user.role, avatar: req.user.avatar } });
   } catch (error) {
     res.status(500).json({ message: "Failed to update profile." });
   }
